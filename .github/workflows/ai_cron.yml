@@ -1,0 +1,89 @@
+name: End-to-End AI Video Pipeline
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 15 * * *'   # 8:00 PM Pakistan time
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.g.outputs.run }}
+    steps:
+      - id: g
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run=true" >> $GITHUB_OUTPUT
+          elif [ $(( $(date +%s) / 86400 % 2 )) -eq 0 ]; then
+            echo "run=true" >> $GITHUB_OUTPUT
+          else
+            echo "run=false" >> $GITHUB_OUTPUT
+            echo "Aaj ki bari nahi, skip."
+          fi
+
+  run-pipeline:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install ffmpeg aur fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+          ffmpeg -version | head -n 1
+
+      - name: Install packages
+        run: pip install groq numpy pillow
+
+      - name: Step 1 - Groq se captions
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          python run_task.py
+          cat story.txt
+
+      - name: Step 2 - 2D animation render
+        run: python render_2d.py
+
+      - name: Step 3 - Caption, music aur action sounds
+        run: python postprocess.py
+
+      - name: Story text save
+        run: cp story.txt ./output_temp/story.txt
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-video
+          path: ./output_temp/
+          if-no-files-found: warn
+
+      - name: Email - success
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          MODE: success
+        run: python send_email.py
+
+      - name: Email - failure
+        if: failure()
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          MODE: fail
+        run: python send_email.py
